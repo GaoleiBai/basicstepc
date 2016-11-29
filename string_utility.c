@@ -192,7 +192,7 @@ void DispHex2tty(char * ptty, unsigned char * pData, int len)
 
         int i;
         for(i=0; i<len; i++)
-        {
+        {        /*2表示最少有两位数比如2要写成02(有点的情况下是02无点的情况下是空格+2)*/
                 fprintf(Ptr, "%.2X-", pData[i]);
                 if(i%16==15)
                         fprintf(Ptr, "\n");
@@ -204,6 +204,39 @@ void DispHex2tty(char * ptty, unsigned char * pData, int len)
         fclose(Ptr);
 }
 
+/** 以hex方式显示数组到指定终端
+ * 
+ * @param ptty 终端位置
+ * @param pString 数据
+ * @return  无
+ */
+void DispStr2tty(char * ptty, char *pString)
+{
+        FILE *Ptr = fopen(ptty, "w");
 
+        fprintf(Ptr, "%s\n", pString);
+
+        fclose(Ptr);
+}
+/** 以hex方式显示数组到当前终端
+ * 
+ * @param pData 数组
+ * @param len 长度
+ * @return  无
+ */
+void DispHex2this(unsigned char * pData, int len)
+{
+        int i;
+        for(i=0; i<len; i++)
+        {
+                fprintf(stderr, "%.2X-", pData[i]);
+                if(i%16==15)
+                        fprintf(stderr, "\n");
+                else if(i%16==7)
+                        fprintf(stderr, "  ");
+        }
+        fprintf(stderr, "\nlen: 0x%X\n", len);
+        fprintf(stderr, "---------------------\n");
+}       
 
 
