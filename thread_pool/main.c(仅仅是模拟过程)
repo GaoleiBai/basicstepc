@@ -1,0 +1,305 @@
+/***********************************************************************
+|               R E V I S I O N   H I S T O R Y
+|-----------------------------------------------------------------------
+| NO    Sts  Description
+| ----  ---  -----------------------------------------------------------
+| 1          Initial reversion from vcs
+***********************************************************************/
+
+////////////////////////////////////////////////////////////////
+/// COPYRIGHT POLELINK
+/// Copyright (c) 2013
+/// All rights reserved.
+///  
+/// @file  dxg.c
+/// @brief data exchange gateway entrance
+///
+/// @version $Revision: 0 $
+/// @author Wuchunyu
+/// @date $Date: 2013-04-13 22:51:31 +0800 (Sat, 13 Apr 2013) $
+///
+////////////////////////////////////////////////////////////////
+
+
+/** @note 系统调用 *****************************************************/
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <pthread.h>
+#include <time.h>
+#include <errno.h>
+
+#include <netinet/in.h>		/* socket类定义需要 */
+#include <netinet/tcp.h>	/* socket类定义需要 */
+#include <arpa/inet.h>		/* socket字符串转化 */
+
+#include "d_checkpara.h"
+#include "d_syscntl.h"
+#include "d_trace.h"
+#include "t_message.h"
+#include "d_threadpool.h"
+#include "d_connectpool.h"
+
+/** @note 外部参数传递 **************************************************/
+
+#define In_MaxLinks 20000
+
+int In_MaxBack  = 20000;    // listen 连接限制
+int In_MaxEpoll = 20000;    // 
+
+
+/** @note 外部参数传递 **************************************************/
+void Stop(int signo) 
+{
+	running = 0;
+}
+
+
+/**********************************************************************/
+int main( int argc, char ** argv )
+{
+	int i;
+	
+	/** @note 增加对参数检测和处理的函数 */
+	checkArgvs( argc, argv );
+	
+	/** @note 捕捉Ctrl+c */
+	signal(SIGINT,  Stop); 
+	signal(SIGTERM, Stop); 
+	//signal(SIGSEGV, Stop);
+	
+	/** @note 系统配置初始化 */
+	initSysConf();
+	
+	
+	/******************************************************************/
+	
+	/** @note 建立TCP服务端*/
+	int ListenFd = createTCPSrv(In_SockPort, In_MaxBack);
+	
+	/******************************************************************/
+	SrvEndPoint = (char *)malloc(MaxLenEndPoint);
+	/** @note 选择应用服务器的EndPoint*/
+	if(chooseSrvSoapEndPoint("./TDCList.conf", &SrvEndPoint) )
+		exit(0);
+	
+	/******************************************************************/
+	
+	if(createConnectArray(&pConnects, In_MaxEpoll))
+	{
+		fprintf(stderr, "error : create : msgpoll\n");
+		exit( EXIT_FAILURE );
+	}
+	
+	struct epoll_event * pEvts = NULL;
+	if(createEvtArray(&pEvts, In_MaxEpoll))
+	{
+		fprintf(stderr, "error : create : evtpoll\n");
+		exit( EXIT_FAILURE );
+	}
+	
+	linklist_pt kIdleConnectLinker = NULL;
+	if( IdleConnectLinker_create(&kIdleConnectLinker) )
+		exit(0);
+	
+	/******************************************************************/
+	int EpollFd = epoll_create( In_MaxEpoll );
+	/******************************************************************/
+	
+	/** @note DXG 提供服务线程*/
+	pthread_t tid_Srv;
+	if( pthread_create(&tid_Srv, 0, (void *)Thread_srv, (void *)NULL) )
+		exit(0);
+	
+	/** @note 对所有连接通道判断超时*/
+	//  if( pthread_create(&tid_Timeout, 0, (void *)Thread_detectTimeout, (void *)NULL) )
+	//  	return -1;
+	
+	linklist_pt kPoolLinker = NULL;
+	if( PoolLinker_create(&kPoolLinker) )
+		exit(0);
+	
+	if( PoolLinker_init(&kPoolLinker, pConnects, kIdleConnectLinker, EpollFd) )
+		exit(0);
+	
+	/******************************************************************/
+	
+	/** @note epoll写入事件*/
+	struct epoll_event EpollEvt;
+	EpollEvt.events   = EPOLLIN ;	/**< @attention 作用于连接之前，确保能在LT模式下使客户端能够连接! */
+	EpollEvt.data.u32 = -1;			/**< @warning 这里不能使用0，不然返回的accept的fd就混乱了！ */
+	
+	/** @attention 把listen的句柄放在第0个元素的位置 */
+	pConnects[0].fd = EpollFd;
+	
+	if( epoll_ctl( EpollFd, EPOLL_CTL_ADD, ListenFd, &EpollEvt ) < 0 )
+	{
+		fprintf(stderr, "error : epoll : add(%d)\n", errno);
+		close_FD( ListenFd );
+		exit( EXIT_FAILURE );
+	}
+	
+	/** @note 记录当前使用的通道数目*/
+	updateCurConnects(IS_ADD);
+	
+	/******************************************************************/
+	
+	/** @note 记录程序启动时间*/
+	time(&DXGStartTime);
+	
+	while(running)
+	{
+		int WaitFds = -1;
+		/** @note 等待客户端触发事件 */
+		if( ( WaitFds = epoll_wait( EpollFd, pEvts, In_MaxEpoll, -1 ) ) == -1 )
+		{
+			fprintf(stderr, "warn : epoll : wait(%d)\n", errno );
+			BeDebug(isDebug, "warn : epoll : wait(%d)\n", errno );
+			
+			if((errno == EINTR)||(errno == EAGAIN))
+				continue;  
+			else
+				exit( EXIT_FAILURE );
+		}
+		
+		updateCurEvts(WaitFds);
+		
+		int EvtIndex;
+		for( i = 0; i < WaitFds; i++ )
+		{
+			EvtIndex = pEvts[i].data.u32;
+			if( EvtIndex  == -1 )
+			{
+				BeDebug(isDebug, "---- new linking ----\n" );
+				
+				int ConnectIndex;
+				/** @note 尽量选择空闲（已经关闭的）pConnects通道信息 */
+				if(IdleConnectLinker_isEmpty(kIdleConnectLinker))
+				{
+					ConnectIndex = getMaxConnects();
+					fprintf(stderr, "<%d>", ConnectIndex);
+				}else{
+					
+					ConnectIndex = IdleConnectLinker_remove(kIdleConnectLinker, 0);
+					fprintf(stderr, "<%d->", ConnectIndex);
+				}
+				
+				int ConnectFd;					/**< @note accept后的通讯句柄 */
+				struct sockaddr_in ClientAddr;	/**< @note 客户端信息 */
+				socklen_t len = sizeof( struct sockaddr_in );
+				if( ( ConnectFd = accept( ListenFd, (struct sockaddr *)&ClientAddr, &len ) ) == -1 )
+				{
+					BeDebug(isDebug, "error : socket : accept(%d)\n", errno);
+					updateSysWrnNO();
+					continue;
+				}
+				
+				//  char *LocalIp = NULL;
+				//  char *ClientIp = NULL;
+				//  int ClientPort = getIpInfo(ClientAddr, ConnectFd, &LocalIp, &ClientIp);
+				//  if(NULL != LocalIp) free(LocalIp);
+				
+				/** @attention 区别连接之前的状态 */
+				EpollEvt.events = EPOLLIN | EPOLLET;
+				EpollEvt.data.u32 = ConnectIndex;
+				
+				/** @note 事件初始化*/
+				initConnect( &(pConnects[EpollEvt.data.u32]), ConnectFd);
+				
+				updateCurConnects(IS_ADD);
+				
+				BeDebug(isDebug, "---- params(%d:%d) ----\n", ConnectFd, ConnectIndex );
+				
+				if( epoll_ctl( EpollFd, EPOLL_CTL_ADD, ConnectFd, &EpollEvt ) < 0 )
+				{
+					BeDebug(isDebug, "warn : epoll : add(%d)\n", errno);
+					updateSysWrnNO();
+					updateCurConnects(IS_SUB);
+					close_FD(ConnectFd);
+					clearConnect( &(pConnects[EpollEvt.data.u32]) );
+				}
+				
+			}else if(pEvts[i].data.fd<0){
+				
+				/** @note 发送缓冲区可写，继续未完成的写操作 */
+				BeDebug(isDebug, "warn : epoll : FD<0\n");
+				updateSysWrnNO();
+				
+			}else if(pEvts[i].events & EPOLLIN){
+				
+				/** @note 需要关闭通道(内部控制：这里立即关闭 | 待消息处理结束后关闭) */
+				if(1 == pConnects[EvtIndex].ShutSig)
+				{
+					fprintf(stderr, "OFF\n");
+					
+					pthread_mutex_lock(&stop_mutex);
+					stopConnect(kIdleConnectLinker, EpollFd, pConnects[EvtIndex], EvtIndex, 0, 'D');
+					pthread_mutex_unlock(&stop_mutex);
+					
+				}else{
+					
+					fprintf(stderr, "rcving\n");
+					
+					int j, pos = 0;
+					int ThreadSum = PoolLinker_getCapacity(kPoolLinker);
+					ThreadInfo_pt pPath = NULL;
+					
+					for(j=0; j<ThreadSum; j++)
+					{
+						pos = PoolLinker_getElemI(kPoolLinker, j, &pPath);
+						
+						if(0 == pPath->tPara[pos][0])
+							break;
+					}
+					
+					if( (ThreadSum-j) < THREADPOLL_WARNSIZE)
+					{
+						int kErr = 0;
+						if( ( kErr=PoolLinker_expandCapacity(kPoolLinker, pConnects, kIdleConnectLinker, EpollFd) ) < 0)
+						{
+							BeDebug(isDebug, "error : PoolLinker : err(%d)\n", kErr);
+							
+						}
+					}
+					
+					{
+						pPath->tPara[pos][0] = 1;
+						pPath->tPara[pos][1] = EvtIndex;
+						time( &(pConnects[EvtIndex].ActiveTime) );
+						pthread_mutex_unlock( &((pPath->tMtx)[pos]) );
+					}
+					
+				}
+				
+			}else if(pEvts[i].events & EPOLLOUT){
+				
+				/** @note 发送缓冲区可写，继续未完成的写操作 */
+				BeDebug(isDebug, "error : epoll : OUT(%d)\n", pEvts[i].data.fd);
+				updateSysWrnNO();
+				
+			}else{
+				/** @note 未知 */
+				BeDebug(isDebug, "error : epoll : NULL\n");
+			}
+		}
+	}
+	
+	/******************************************************************/
+	
+	void * status;
+	
+	close_FD( ListenFd );
+	pthread_join(tid_Srv, &status);
+	
+	PoolLinker_destroy(kPoolLinker);
+	destroyConnectArray(pConnects);
+	destroyEvtArray(pEvts);
+	
+	/******************************************************************/
+	
+	fprintf(stderr, " -- End --\n");
+	return 0;
+}
