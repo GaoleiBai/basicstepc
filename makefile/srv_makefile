@@ -1,0 +1,107 @@
+P_INC=../include/
+P_COM=../common/
+P_PRS=../parser/
+P_OBU=../obu/
+P_JSON=../lib/cJSON/
+P_CRYPT=../lib/crypt/
+
+THREAD_LIB= -lpthread
+GSOAP_LIB= -lgsoap
+MATH_LIB= -lm
+
+CC=gcc
+CROSS=arm-linux-gnueabi
+COFLAGS=-O2
+CWFLAGS=-Wall
+CGFLAGS=-g
+CIFLAGS=-I$(P_PRS) -I$(P_INC) -I$(P_COM) -I$(P_OBU) -I$(P_JSON) -I $(P_CRYPT)
+CDFLAGS=-DSRM_DEBUG -DWITH_NONAMESPACES
+CMFLAGS=-fno-strict-aliasing
+CFLAGS= $(CGFLAGS) $(CWFLAGS) $(COFLAGS) $(CIFLAGS) $(CMFLAGS) $(CDFLAGS)
+
+CPFLAGS=-DPC_TEST
+
+# choose server or client or all
+CPFLAGS += -DDEBUG_SERVER  -DDEBUG_CLIENT
+
+# project names
+WS_BASE=soap
+WS_APP=simServer
+
+# obj files
+# SRV_OBJS=$(WS_BASE)C.o $(WS_BASE)Server.o
+# CLI_OBJS=$(GSOAP_ROOT)/env/envC.o $(WS_BASE)ClientLib.o
+# ALL_OBJS=${WS_APP}server.o $(WS_BASE)C.o $(WS_BASE)Server.o ${WS_APP}test.o $(WS_BASE)ClientLib.o
+
+
+# source files
+WSPUB_SRCS=${WS_BASE}C.c
+WSSRV_SRCS=${WS_BASE}Server.c
+WSCLI_SRCS=${WS_BASE}Client.c
+WSALL_SRCS=${WSPUB_SRCS} $(WSSRV_SRCS) $(WSCLI_SRCS)
+
+P_SFILE=../lib/cJSON/cJSON.c ../common/pl_string.c ../common/pl_base64.c ../lib/crypt/LibMd5.c
+C_SFILE=pl_srvsim.c pl_srvsim_chk.c pl_srvsim_pack.c pl_srvsim_stdin.c \
+                pl_srvsim_thd.c
+SFILE=$(P_SFILE) $(C_SFILE) $(WSALL_SRCS)
+EFILE=$(WS_APP)
+
+# data server address & port ( provide services )
+WS_SRV_ADDR=192.168.6.26
+WS_SRV_PORT=8080
+
+# data server address & port ( using other's services )
+WS_CLI_ADDR=192.168.6.26
+WS_CLI_PORT=9009
+
+# using local file(has got from server) or remote file(update from remote)
+CLI_SOURCE=local
+
+all:server
+########################################################################
+
+gen_local_srv_header:
+        @mkdir Fserver
+        @cat $(WS_APP)_srv_header.h|sed -e "s/WS_SRV_PORT/$(WS_SRV_PORT)/g" |sed -e "s/WS_SRV_ADDR/$(WS_SRV_ADDR)/g" > ./Fserver/${WS_APP}
+.h
+
+gen_local_srv_srcs:
+        @soapcpp2 -S -L -x -c -d./Fserver ./Fserver/${WS_APP}.h
+
+gen_local_cli_srcs:
+        @mkdir Fclient
+ifeq ($(CLI_SOURCE),local)
+        @cp ./$(WS_APP)_cli_header.h ./Fclient/$(WS_APP).h
+else
+        @wsdl2h -c -o ./Fclient/$(WS_APP).h \
+                http://$(WS_CLI_ADDR):$(WS_CLI_PORT)/vcs?wsdl
+        @cp ./Fclient/$(WS_APP).h ./$(WS_APP)_cli_header.h
+endif
+        @soapcpp2 -C -L -x -c -d./Fclient ./Fclient/$(WS_APP).h
+
+combine_wbs_header:
+        @cat $(WS_APP)_srv_merge.h|sed -e "s/WS_SRV_PORT/$(WS_SRV_PORT)/g" |sed -e "s/WS_SRV_ADDR/$(WS_SRV_ADDR)/g" > ./Fserver/${WS_APP}.
+h
+        @cat ./Fclient/$(WS_APP).h ./Fserver/${WS_APP}.h > ./${WS_APP}.h
+        @soapcpp2 -L -x -c ./$(WS_APP).h
+        @cp ./Fserver/${WS_APP}.wsdl ./Fserver/${WS_BASE}Server.c ./Fclient/$(WS_BASE)Client.c .
+        @rm -rf ./Fclient ./Fserver
+        @rm dxg.nsmap
+
+compile-PC:
+        $(CC) $(CFLAGS) $(CPFLAGS) -o ${EFILE} ${SFILE} $(GSOAP_LIB) $(THREAD_LIB) $(MATH_LIB)
+
+server:Makefile gen_local_srv_header
+        @make gen_local_srv_srcs
+        @make gen_local_cli_srcs
+        @make combine_wbs_header
+        @make compile-PC
+
+scp:
+        @scp $(WS_APP) jason@dxg:/home/jason/workspace/test
+
+########################################################################
+clean:
+        @rm -rf $(EFILE) $(WS_APP).h $(WS_APP).nsmap $(WS_BASE)* ./Fclient ./Fserver
+
+.PHONY: all $(dxg_bin) clean
