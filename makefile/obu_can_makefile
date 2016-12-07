@@ -1,0 +1,52 @@
+
+P_COM=../common
+P_INC=../include
+P_CFG=../config
+
+CC=gcc
+CROSS=
+COFLAGS=-O2
+CWFLAGS=-Wall
+CGFLAGS=-g
+CIFLAGS=-I$(P_CFG) -I$(P_INC) -I$(P_COM)
+
+# for debug display
+CDFLAGS=-DSRM_DEBUG
+
+# for terminal control input
+CSFLAGS=-DT_STDIN
+
+CMFLAGS=-fno-strict-aliasing
+CFLAGS= $(CGFLAGS) $(CWFLAGS) $(COFLAGS) $(CIFLAGS) $(CMFLAGS) $(CDFLAGS) $(CSFLAGS)
+
+CPFLAGS=-DPC_TEST
+
+LMATH= -lm
+LPTHREAD= -lpthread
+
+P_SFILE=$(P_COM)/p_system.c $(P_COM)/p_math.c $(P_COM)/p_log.c \
+		$(P_COM)/p_string.c $(P_COM)/p_file.c $(P_COM)/p_shell.c \
+		$(P_COM)/cJSON.c  $(P_COM)/p_sem.c \
+		$(P_COM)/p_shm_can_raw.c
+
+SFILE= obu_can_main.c sim_can.c $(P_SFILE) obu_can.c p_stdin.c p_shm_extra.c
+EFILE=can_main
+
+all:arm
+
+pc:
+	@$(CC) $(CPFLAGS) $(CFLAGS) -o $(EFILE) $(SFILE) $(LPTHREAD) $(LMATH)
+
+arm:
+	@$(CC) $(CFLAGS) -o $(EFILE) $(SFILE) $(LPTHREAD) $(LMATH)
+
+move:
+	@scp $(EFILE) root@flea3_59:/home/root/plOBU
+
+stop:
+	@pgrep $(EFILE) |xargs kill -9
+
+clean:
+	@rm -rf $(EFILE)
+
+.PHONY: all $(EFILE) clean
