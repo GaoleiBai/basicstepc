@@ -1,0 +1,85 @@
+
+CC=gcc
+COFLAGS=-O2
+CWFLAGS=-g -Wall
+CIFLAGS=
+CMFLAGS=
+GSOAP_LIB=-lgsoap
+PTHREAD_LIB=-lpthread
+CFLAGS= $(CWFLAGS) $(COFLAGS) $(CIFLAGS) $(CMFLAGS) $(VERSION)
+
+# 模拟远端提供webservice服务的地址和端口
+#SRV_ADDR=192.168.6.243
+SRV_ADDR=192.168.6.242
+SRV_PORT=8080
+# 本地webservice服务的地址和端口
+DWBS_ADDR=192.168.6.146
+DWBS_PORT=9009
+
+# SIM_REMOTE / REAL_REMOTE / SIM_LOCAL / REAL_LOCAL
+#       (compile中只有前面两种，选择LOCAL后默认使用REAL_REMOTE)
+#POS=REAL_REMOTE
+POS=SIM_REMOTE
+WSNAME=dxg
+WSNAME0=soap
+
+dxg_soap=soapC.c soapClient.c soapServer.c
+dxg_src=dxg.c d_checkpara.c d_syscntl.c d_utils.c t_message.c d_trace.c \
+                d_threadpool.c d_linklist.c d_connectpool.c obu_message_pack.c \
+                $(dxg_soap)
+
+# 不同模式下产生的垃圾文件名称
+ifeq ($(POS),$(filter $(POS),SIM_REMOTE SIM_LOCAL))
+        NSMAP_FILE=simServer.nsmap
+else ifeq ($(POS),$(filter $(POS),REAL_REMOTE REAL_LOCAL))
+        NSMAP_FILE=PacketDispatcherServiceSoapBinding.nsmap
+endif
+
+all:dxg
+
+
+gen_local_srv_header:
+        @mkdir Fserver
+        @cat $(WSNAME)_srv_header.h|sed -e "s/DWBS_PORT/$(DWBS_PORT)/g" |sed -e "s/DWBS_ADDR/$(DWBS_ADDR)/g" > ./Fserver/${WSNAME}.h
+gen_local_server_source:
+        @soapcpp2 -S -L -x -c -d./Fserver ./Fserver/${WSNAME}.h
+
+gen_local_Client_source:
+        @mkdir Fclient
+ifeq ($(POS),SIM_REMOTE)
+        @wsdl2h -c -o ./Fclient/$(WSNAME).h \
+                http://$(SRV_ADDR):$(SRV_PORT)/simServer?wsdl
+else ifeq ($(POS),REAL_REMOTE)
+        @wsdl2h -c -o ./Fclient/$(WSNAME).h \
+                http://192.168.6.243:8080/PacketDispatcher/Packet?wsdl
+                #http://pldv.polelink.com:8080/PacketDispatcher/Packet?wsdl
+else
+        @cp ./$(WSNAME)_client_header_$(POS).h ./Fclient/$(WSNAME).h
+endif
+        @soapcpp2 -C -L -x -c -d./Fclient ./Fclient/$(WSNAME).h
+
+combine_wbs_header:
+        @cat $(WSNAME)_srv_merge.h|sed -e "s/DWBS_PORT/$(DWBS_PORT)/g" |sed -e "s/DWBS_ADDR/$(DWBS_ADDR)/g" > ./Fserver/${WSNAME}.h
+        @cat ./Fclient/$(WSNAME).h ./Fserver/${WSNAME}.h > ./${WSNAME}.h
+        @soapcpp2 -L -x -c ./$(WSNAME).h
+        @cp ./Fserver/${WSNAME}.wsdl ./Fserver/${WSNAME0}Server.c ./Fclient/$(WSNAME0)Client.c .
+        @rm -rf ./Fclient ./Fserver
+ifeq ($(NSMAP_FILE), $(wildcard $(NSMAP_FILE)))
+        @echo $(NSMAP_FILE)
+endif
+
+compile:
+        @$(CC) -D$(POS) $(CFLAGS) -g -o $(WSNAME) $(dxg_src) $(GSOAP_LIB) $(PTHREAD_LIB)
+
+dxg:Makefile gen_local_srv_header
+        @make gen_local_server_source
+        @make gen_local_Client_source
+        @make combine_wbs_header
+        @make compile
+
+
+clean:
+        @rm -rf $(WSNAME) $(WSNAME).h $(WSNAME).wsdl $(WSNAME).nsmap soap* \
+        ./Fclient ./Fserver
+
+.PHONY: all $(dxg_bin) clean  
