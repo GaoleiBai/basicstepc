@@ -1,15 +1,6 @@
 ////////////////////////////////////////////////////////////////
-/// COPYRIGHT POLELINK
-/// Copyright (c) 2013
-/// All rights reserved.
-///  
-/// @file  d_sysinit.c
-/// @brief 系统初始化
-///
-/// @version $Revision: 0 $
-/// @author Wuchunyu
-/// @date $Date: 2013-04-13 22:51:31 +0800 (Sat, 13 Apr 2013) $
-///
+
+
 ////////////////////////////////////////////////////////////////
 
 #include <stdio.h>
