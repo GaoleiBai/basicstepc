@@ -1,14 +1,5 @@
 ////////////////////////////////////////////////////////////////
-/// COPYRIGHT Polelink
-/// Copyright (c) 2013
-/// All rights reserved.
-/// 
-/// @file  d_sysinit.h
-/// @brief 系统初始化
-///
-/// @version $Revision: 0 $
-/// @author Wuchunyu
-/// @date $Date: 2013-03-25 10:21:33 +0800 (Mon, 25 Mar 2013) $
+
 ///
 ////////////////////////////////////////////////////////////////
 
